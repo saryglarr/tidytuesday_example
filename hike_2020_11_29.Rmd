@@ -6,25 +6,162 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.height = 12)
 ```
 
-## R Markdown
+Step by step following [Pozdnyakov](https://vk.com/id247411462) analysis of [Washington Trails Association](https://www.wta.org) data  that were collected by [TidyX](https://github.com/thebioengineer/TidyX/tree/master/TidyTuesday_Explained/035-Rectangles) crew. It can be downloaded from [Tidy Tuesday Github](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-11-24/readme.md) page or by using `tidytuesdayR` package.
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+## Dataset downloading 
+```{r}
+library(tidyverse)
+library(hrbrthemes)
+```
+загрузка датасета с помощью пакетов с гитхаба
+```{r}
+tuesdata <- tidytuesdayR::tt_load('2020-11-24')
+hike_data <- tuesdata$hike_data
+```
+## Reprocessing 
+Ввести в консоле название "tuesdata", запустить. Во вкладке Viewer откроется полная информация с гитхаба о датасете. 
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Для получения описания таблитцы в консоле вводим hike_data. Dataframe это список из векторов одинаковой длины, по-этому к ним можно обращаться как к матрице, таблице итп. Но когда в таблице содержиться колонка со списком (features <list>), базовый R будет работать не стабильно, выдавать ошибки, например при загрузке с помощью read.csv. 
+Но в tidyverse можно. 
 
-```{r cars}
-summary(cars)
+Посмотрим, являются ли имена троп уникальными, чтобы их можно было использовать как ID. 
+```{r}
+hike_data %>% 
+  count(name, sort = TRUE)
+
+hike_data %>% filter(name == "Dry Creek") 
+```
+Есть разные тропы с одинаковыми названиями. Создаем колонку с ID для троп.
+Другой вариант: 
+hike_data %>% 
+  mutate(id = row_number()) %>% 
+  relocate(id)
+расположить id впереди всех колонок можно внутри мутейт, без релокейт.
+mutate(id = row_number(), .before = name)
+
+```{r}
+hike<- hike_data %>% 
+  mutate(id = row_number(), .before = everything()) %>% 
+  separate(col = location,
+           into = c("region", "area"),
+           sep = "\\s--\\s",
+           fill = "right") %>% 
+  separate(col = length,
+           into = c("length_miles", "type"),
+           sep = "\\smiles,?\\s") %>% 
+  type_convert() %>% 
+  mutate(rating = na_if(rating, 0))
+```
+В колонке location названия идут через двойной дефис "Snoqualmie Region -- Snoqualmie Pass". Можно разбить на две колонки. 
+
+\\s -регулярка, которая обозначает - любые виды пробелов.
+
+Если не прописать fill = "right", можно получить такое предупреждение: Expected 2 pieces. Missing pieces filled with `NA` in 38 rows [34, 73,  ...]. Но на самой таблице это не сказывается. Все пустые значения в обеих вариантах заполняется NA.
+
+В колонке lenght значения идут через запятую и явно обозначают два признака - длина и форма тропы: 9.0 miles, roundtrip.
+Можно разделить на две колонки. 
+
+sep = "\\miles,?\\s", 
+-,?- вопросительный знак после  запятой означает, что
+запятая может присуствовать, либо отсутствовать.
+
+```{r}
+hike %>% 
+  count(type)
+```
+Получили третье значение "of trails". Проверить ошибка ли это. into = c("length_miles", "type"), вносим изменения.
+
+```{r}
+hike %>% 
+  filter(is.na(type)) 
 ```
 
-## Including Plots
+Перевести колонки с цифрами в нумерик формат через type_convert (вместо конвертации каждой колонки через as.numeric или across)  
 
-You can also embed plots, for example:
+```{r}
+skimr::skim(hike)
+```
+Смотрим на колонку hist, на сколько равномерно распределение. Gain 100й персинтиль =27996фут, что в км выше Эвереста. Ошибка? rating - 0-й персинтиль =0, это отсутсвие значений? 
+```{r}
+hike %>% 
+  filter(rating == 0)
+```
+Действительно нет оценок. Следует заменить 0 на NA.
+?na_if
+pull() вытаскивает значения выбранного вектора отдельно от датафрейма
+```{r}
+hike %>% 
+  pull(rating)
+```
+Убедились, что значения не случайные, вполне осмысленные, такая тропа существует.
+```{r}
+hike %>% 
+  filter(gain == max(gain))
+```
+Что делать с колонкой, в которой в каждой ячейке вектор?
+функция nest() позволяет создавать сжатые значения/вложенные
+unnest наоборот расскладывает 
+unnest(cols = features) - разложит в длинну, те создат несколько колонок, различающихся только по значению features. При этом длина датафрейма удлиняется.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+hike_long<- hike %>% 
+  unnest(col = features)
+```
+```{r}
+hike_wide<- hike %>% 
+  unnest(col = features) %>% 
+  mutate(value = TRUE) %>% 
+  pivot_wider(names_from = features, 
+              values_from = value,
+              values_fill = FALSE) 
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Посмотреть среднее количесвто фичей на регион
+
+```{r}
+features_ratio_by_region <- hike_wide %>% 
+  group_by(region) %>% 
+  summarise(across(`Dogs allowed on leash`:Summits, mean)) %>% 
+  pivot_longer(cols = `Dogs allowed on leash`:Summits,
+               names_to = "features",
+               values_to = "ratio") %>% 
+  arrange(region, features)
+```
+## Visualization
+```{r}
+features_ratio_by_region %>% 
+ggplot()+
+  geom_bar(aes(x=region, y=ratio, fill = region), stat = "identity")+ 
+  coord_flip()
+```
+
+limits = c(0,1) показывает на плоте значения до 100%, а не 80%, что улучшает восприятие данных
+
+```{r}
+features_ratio_by_region %>% 
+ggplot()+
+  geom_col(aes(x=region, y=ratio, fill = region))+ 
+  coord_polar()+
+  facet_wrap(~features)+
+  #guides(fill = FALSE)+
+  theme_void()
+```
+```{r}
+features_ratio_by_region %>% 
+  ggplot()+
+  geom_col(aes(x=region, y=ratio, fill = region))+
+  coord_polar(clip = "off")+
+  facet_wrap(~features)+
+  scale_y_continuous(labels = scales::percent, limits = c(0,1))+
+  guides(fill=FALSE)+
+  labs(x = "",
+       y = "",
+       title = "Which region suits for your best advanture",
+       subtitle = "Ratio of trail features by Washington regions",
+       caption = "Created by Pozdyakov for tidystream\nData from Tidy Tuesday: https://github.com/rfordatascience/tidytuesday")+
+  theme_ipsum(base_size = 5)
+```
+
